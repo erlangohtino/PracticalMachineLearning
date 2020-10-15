@@ -1,3 +1,3 @@
 ## PracticalMachineLearning Pages
 
-[https://erlangohtino.github.io/PracticalMachineLearning/WearableDataPrediction.html](WearableDataPrediction.html)
+https://erlangohtino.github.io/PracticalMachineLearning/WearableDataPrediction.html
