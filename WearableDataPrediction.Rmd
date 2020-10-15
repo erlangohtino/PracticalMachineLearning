@@ -1,0 +1,170 @@
+---
+title: "Wearable Data Prediction Exercise"
+author: "Emilio González"
+date: "9/10/2020"
+output: html_document
+---
+
+### Introduction
+
+This project is about fitting data from wearables and predicting how well the
+subjects wearing them execute a given activity. Data from accelerometers on the
+belt, forearm, arm, and dumbell of 6 participants were used. In this assignment, four different machine learning algorithms will be analysed. Their performance will be tested using training and validation datasets and using cross-validation to better assess the expected errors.
+
+### Background
+
+The approach proposed in the paper by [Velloso et al][1] for the Weight
+Lifting Exercises dataset provided at
+http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har
+is to investigate "how (well)" an activity was performed by the wearer of
+accelerometer devices. Six young health participants were asked to perform one
+set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different
+fashions: exactly according to the specification (Class A), throwing the elbows
+to the front (Class B), lifting the dumbbell only halfway (Class C), lowering
+the dumbbell only halfway (Class D) and throwing the hips to the front (Class
+E). 
+The dataset consists of a training data file and a test data file. The goal of
+this project is to predict the manner in which the subjects did the exercise
+(this is the "classe" variable) on the 20 test cases of the testing dataset. 
+
+### Exploratory analysis
+
+Let's start by loading the data:
+
+```{r data}
+trainingOrig<-read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv")
+testingOrig<-read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv")
+
+```
+
+There are plenty of variables to consider. Exploring their characteristics, some elements are to be highlighted: there are blocks of variables about physical measurements from the different devices (arm, forearm, dumbbell and belt), e.g. total acceleration, pitch, yaw, including variances. The columns X, some timestamp variables and new_window are support elements that will be removed from the fit.
+    
+In the following plot,
+the variable num_window has been chosen as abscisa, the user_name and classe variables
+are being used in the legend and an arbitrarily chosen feature has been used to show how the experiment was mapped into the data.
+
+```{r plot1}
+library(ggplot2)
+g=ggplot(trainingOrig,aes(num_window,yaw_belt,
+                          colour=classe,pch=user_name))+geom_point()
+g
+```
+
+It can be seen that the value
+of the measurement is quite different for different classes of
+exercises, even across subjects. This kind of relationship is what we would
+like to explore. At first sight, it is evident that the problem is quite non-linear.
+
+The dataset has many columns with NAs, therefore the files need to be cleaned up to
+keep only those columns with representative data. Besides, only the columns
+present in both training and testing datasets will be considered.
+
+```{r prepro, message=FALSE}
+library(dplyr)
+trainingOrig<- trainingOrig %>% select(-c("X","raw_timestamp_part_1","raw_timestamp_part_2","cvtd_timestamp",
+          "user_name","new_window"))      
+Representative<-apply(trainingOrig,2,function(y){sum(is.na(y))/length(y)==0})
+training<-trainingOrig[,Representative]
+
+Representative<-apply(testingOrig,2,function(y){sum(is.na(y))/length(y)==0})
+testing<-testingOrig[,Representative]
+
+names<-names(training) %in% names(testing)
+testing<- testing %>% select(names(training[names]))
+training<- training %>% select(names(training[names]),classe)
+
+remove(trainingOrig)
+remove(testingOrig)
+```
+
+### Fitting models
+
+A validation dataset will be sliced out of the `training` dataset, getting 30% of
+its samples. The models will be tested into this dataset before they are applied
+into the target `testing` data frame.
+
+After slicing, in the resulting training dataset `training2`, several fitting models will be
+applied:
+
+- **Treebag**: 'Bagging' applied to a tree classification, appropriate for nonlinear problems.
+- **Random forests**: Appropriate for nonlinear problems, high accuracy.
+- **Recursive partitioning**: Appropriate for nonlinear problems.
+- **Generalized Booster Model**: Trying to minimize error through upweighing classifiers in successive iterations.
+
+(We tried a generalized linear fit as well, but the highly non-linear character
+of the dataset discouraged us using it.)
+
+For better results (to avoid *overfitting*), we will cross-validate within the
+subset `training2` of the original `training` dataset.
+
+```{r models, message=FALSE}
+library(caret)
+set.seed(4321)
+inTrain <- createDataPartition(y=training$classe,p=0.7,list=FALSE)
+training2 <- training[inTrain,]
+validation <- training[-inTrain,]
+validation$classe<-factor(validation$classe)
+
+# Training with Random forests, three-times cross-validation
+# Memory issues made us to keep partition at 70%, reduce number to 3 and ntree to 100.
+# (plotting plot(modFitRF$finalModel) it yields that error nearly stabilizes just
+# after a few tens of trees)
+modFitRF<-train(classe~.,data=training2,method="rf",
+              trControl=trainControl(method="cv",number=3),prox=TRUE,ntree=100)
+predRF <- predict(modFitRF,validation)
+cmRF<-confusionMatrix(predRF,validation$classe)
+important<-varImp(modFitRF) # list of most important variables
+important<-head(arrange(important$importance,desc(important$importance)),5)
+
+# Training with Random forests, 10-times cross-validation, using the variables with the most
+# 'importance' from the output of the Random Forest model
+modFitRPART<-train(classe~num_window+roll_belt+pitch_forearm+yaw_belt+magnet_dumbbell_z+pitch_belt+magnet_dumbbell_y,data=training2,method="rpart",
+                   trControl=trainControl(method="cv",number=10))
+predRPART <- predict(modFitRPART,validation)
+cmRPART<-confusionMatrix(predRPART,validation$classe)
+
+# GBM model, 10-times cross-validation, using the variables with the most
+# 'importance' from the output of the Random Forest model
+modFitGBM<-train(classe~num_window+roll_belt+pitch_forearm+yaw_belt+magnet_dumbbell_z+pitch_belt+magnet_dumbbell_y,data=training2,method="gbm",
+                   trControl=trainControl(method="cv",number=10),verbose=FALSE)
+predGBM <- predict(modFitGBM,validation)
+cmGBM<-confusionMatrix(predGBM,validation$classe)
+
+# Treebag model, 10-times cross-validation
+modFitTREEBAG<-train(classe~.,data=training2,method="treebag",
+                   trControl=trainControl(method="cv",number=10))
+predTREEBAG <- predict(modFitTREEBAG,validation)
+cmTREEBAG<-confusionMatrix(predTREEBAG,validation$classe)
+
+```
+
+The most performing algorithm is the RandomForest one, with an accuracy of `r cmRF$overal[[1]]` over the validation dataset, followed by the Treebag (`r cmTREEBAG$overal[[1]]`) and GBM model (`r cmGBM$overal[[1]]`). The worst performing algorithm is the simplest Rpart model (`r cmRPART$overal[[1]]`). The use of a validation dataset makes it more accurately estimate the out-of-sample error. It is, as expected, a bit higher than the error estimated from cross-validation (due to overfitting).
+
+According to the assessment of the 'importance' of each variable in the RF method, the most contributing regressors are the following: 
+
+```{r important, echo=FALSE}
+important
+```
+
+The confusion matrix of the RandomForest model is described hereafter:
+
+```{r modelRF, echo=FALSE}
+cmRF
+```
+
+### Prediction
+
+Now, we will apply the selected model to predict the class of exercise performed in the 20 different test cases of the testing dataset.
+
+```{r prediction}
+predict(modFitRF,testing)
+```
+
+
+### Conclusion
+
+Four different machine learning algorithms have been applied to a dataset. The models have been picked to face the high non-linearity of the problem under analysis. Their performance has been tested using training and validation datasets. The out-of-sample error is higher, as expected, than in the cross-validation. From the four algorithms, the best performing is the Random Forest, closely followed by Treebag and GBM, and the worst is the Rpart. The Random Forest algorithm has been chosen, at the end, to predict on the final testing dataset.
+
+
+[1]: http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/work.jsf?p1=11201 "Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013."
+
